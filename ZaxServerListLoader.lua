@@ -806,25 +806,33 @@ task.spawn(function()
     Populate()
 end)
 
--- ============================================================
+--- ============================================================
 --  MOBILE ADAPTATION  (runs once after window is visible)
 -- ============================================================
 task.spawn(function()
     task.wait(1.5)
     local vp = workspace.CurrentCamera.ViewportSize
-    if vp.X < 680 then
-        local mw = math.max(vp.X - 14, 320)
-        local mh = math.max(vp.Y - 24, 500)
-        Main.Size     = UDim2.new(0,mw,0,mh)
-        Main.Position = UDim2.new(0.5,-mw/2,0.5,-mh/2)
+    if vp.X < 800 then
+        -- Restrict to 75% of the screen instead of near 100%
+        local mw = math.clamp(vp.X * 0.75, 300, 500)
+        local mh = math.clamp(vp.Y * 0.75, 250, 450)
+        
+        Main.Size     = UDim2.new(0, mw, 0, mh)
+        Main.Position = UDim2.new(0.5, -mw/2, 0.5, -mh/2)
+        
         -- Stack: left panel top, right panel bottom
-        local lh = math.floor(mh*0.43)
-        local rh = math.floor(mh*0.47)
-        LeftPanel.Size     = UDim2.new(1,-14,0,lh)
-        LeftPanel.Position = UDim2.new(0,7,0,7)
-        RightPanel.Size    = UDim2.new(1,-14,0,rh)
-        RightPanel.Position = UDim2.new(0,7,0,lh+14)
-        WIN_H = mh
+        -- Account for the 46px Title Bar height
+        local contentH = mh - 46 
+        local lh = math.floor(contentH * 0.5)
+        local rh = contentH - lh - 21 -- 21px total vertical padding
+        
+        LeftPanel.Size     = UDim2.new(1, -14, 0, lh)
+        LeftPanel.Position = UDim2.new(0, 7, 0, 7)
+        
+        RightPanel.Size    = UDim2.new(1, -14, 0, rh)
+        RightPanel.Position = UDim2.new(0, 7, 0, lh + 14)
+        
+        WIN_W, WIN_H = mw, mh
     end
 end)
 
