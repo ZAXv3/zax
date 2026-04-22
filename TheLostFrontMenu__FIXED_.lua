@@ -56,6 +56,7 @@ local SilentAimHitChance  = 100   -- percent
 local SilentAimPrediction = false
 
 local DisableFogEnabled   = false
+local DisableLightingEnabled = false
 local DesyncEnabled       = false
 local TriggerbotEnabled   = false
 
@@ -86,6 +87,11 @@ local LastTargetPosition = nil
 local OriginalLighting = {
     FogEnd   = Lighting.FogEnd,
     FogStart = Lighting.FogStart,
+    Brightness = Lighting.Brightness,
+    ClockTime = Lighting.ClockTime,
+    GlobalShadows = Lighting.GlobalShadows,
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
     AtmosphereDensity = (Lighting:FindFirstChildOfClass("Atmosphere") and
                          Lighting:FindFirstChildOfClass("Atmosphere").Density) or 0
 }
@@ -942,6 +948,46 @@ MiscTab:CreateToggle({
     end
 })
 
+MiscTab:CreateToggle({
+    Name         = "Disable Lighting (Fullbright)",
+    CurrentValue = false,
+    Callback     = function(v)
+        DisableLightingEnabled = v
+
+        if v then
+            Lighting.Brightness      = 5
+            Lighting.ClockTime       = 14
+            Lighting.GlobalShadows   = false
+            Lighting.Ambient         = Color3.new(1,1,1)
+            Lighting.OutdoorAmbient  = Color3.new(1,1,1)
+
+            -- Remove visual effects
+            for _, obj in ipairs(Lighting:GetChildren()) do
+                if obj:IsA("BloomEffect")
+                or obj:IsA("ColorCorrectionEffect")
+                or obj:IsA("SunRaysEffect")
+                or obj:IsA("BlurEffect")
+                or obj:IsA("DepthOfFieldEffect") then
+                    obj.Enabled = false
+                end
+            end
+        else
+            Lighting.Brightness      = OriginalLighting.Brightness
+            Lighting.ClockTime       = OriginalLighting.ClockTime
+            Lighting.GlobalShadows   = OriginalLighting.GlobalShadows
+            Lighting.Ambient         = OriginalLighting.Ambient
+            Lighting.OutdoorAmbient  = OriginalLighting.OutdoorAmbient
+
+            -- Re-enable effects
+            for _, obj in ipairs(Lighting:GetChildren()) do
+                if obj:IsA("PostEffect") then
+                    obj.Enabled = true
+                end
+            end
+        end
+    end
+})
+
 -- ============================================================
 --  CREDITS TAB
 -- ============================================================
@@ -983,6 +1029,14 @@ RunService.RenderStepped:Connect(function()
         Lighting.FogStart = 9000
         local atm = Lighting:FindFirstChildOfClass("Atmosphere")
         if atm then atm.Density = 0.05 end
+    end
+
+    if DisableLightingEnabled then
+        Lighting.Brightness      = 5
+        Lighting.ClockTime       = 14
+        Lighting.GlobalShadows   = false
+        Lighting.Ambient         = Color3.new(1,1,1)
+        Lighting.OutdoorAmbient  = Color3.new(1,1,1)
     end
 end)
 
