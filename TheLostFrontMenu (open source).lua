@@ -20,6 +20,12 @@ local DistanceESPEnabled = true
 local SkeletonESPEnabled = false
 local TeamCheck = true
 
+-- ========== FPV DRONE ESP VARIABLES ==========
+local FPVESPEnabled = false
+local FPVBoxESPEnabled = true
+local FPVNameESPEnabled = true
+local FPVDistanceESPEnabled = true
+
 local SilentAimEnabled = false
 local ShowFOV = false
 local WallCheck = true
@@ -31,7 +37,15 @@ local DisableFogEnabled = false
 local DesyncEnabled = false
 local TriggerbotEnabled = false
 
+-- ========== AIMBOT VARIABLES ==========
+local AimbotEnabled = false
+local AimbotSmoothing = 0.3
+local AimbotKey = Enum.KeyCode.LeftAlt
+local AimbotMode = "Hold"  -- "Hold" or "Toggle"
+local AimbotActive = false
+
 local ESPData = {}
+local FPVData = {}  -- Store FPV drone ESP elements
 local CurrentTarget = nil
 
 -- Save Original Lighting
@@ -48,6 +62,225 @@ FOVCircle.Color = Color3.fromRGB(255, 255, 255)
 FOVCircle.Thickness = 1
 FOVCircle.Radius = FOVRadius
 FOVCircle.Filled = false
+
+-- ========== FPV DRONE DETECTION ==========
+local FPVDrones = {}  -- Cache of detected drones
+local FPVPartNames = {
+    "Blade_BL", "Blade_BR", "Blade_FL", "Blade_FR",
+    "Explosive", "Explosive1", "Explosive2",
+    "Rotator_BL", "Rotator_BR", "Rotator_FL", "Rotator_FR",
+    "FPV", "Drone", "Quadcopter", "UAV", "DroneBody",
+    "MainPart", "CenterPart", "Body"
+}
+
+-- Function to check if a part belongs to an FPV drone
+local function IsFPVDrone(part)
+    if not part or not part.Parent then return false end
+    
+    -- Check part name
+    for _, name in ipairs(FPVPartNames) do
+        if part.Name == name or (part.Name and part.Name:find(name)) then
+            local model = part.Parent
+            if model and model:IsA("Model") then
+                -- Don't detect player characters
+                local isCharacter = false
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player.Character == model then
+                        isCharacter = true
+                        break
+                    end
+                end
+                if not isCharacter then
+                    return true, model, part
+                end
+            end
+        end
+    end
+    return false, nil, nil
+end
+
+-- Scan for FPV drones
+local function ScanForFPVDrones()
+    local drones = {}
+    local checkedModels = {}
+    
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            local isDrone, model, mainPart = IsFPVDrone(descendant)
+            if isDrone and model and not checkedModels[model] then
+                checkedModels[model] = true
+                -- Find the best part to track (center of drone)
+                local trackPart = mainPart
+                for _, altPart in ipairs({"Explosive", "MainPart", "CenterPart", "Body", "FPV"}) do
+                    local found = model:FindFirstChild(altPart)
+                    if found then
+                        trackPart = found
+                        break
+                    end
+                end
+                drones[model] = trackPart
+            end
+        end
+    end
+    
+    return drones
+end
+
+-- ========== FPV DRONE ESP SYSTEM ==========
+local function CreateFPVESP(drone)
+    if FPVData[drone] then return end
+    
+    local esp = {}
+    
+    -- Box ESP
+    esp.Box = Drawing.new("Square")
+    esp.Box.Color = Color3.fromRGB(255, 0, 255)  -- Magenta/Purple for drones
+    esp.Box.Thickness = 2
+    esp.Box.Filled = false
+    
+    -- Name label
+    esp.Name = Drawing.new("Text")
+    esp.Name.Color = Color3.fromRGB(255, 0, 255)
+    esp.Name.Outline = true
+    esp.Name.Center = true
+    esp.Name.Size = 14
+    esp.Name.Text = "[FPV DRONE]"
+    
+    -- Distance label
+    esp.Distance = Drawing.new("Text")
+    esp.Distance.Color = Color3.fromRGB(200, 200, 255)
+    esp.Distance.Outline = true
+    esp.Distance.Center = true
+    esp.Distance.Size = 12
+    
+    FPVData[drone] = esp
+end
+
+local function DestroyFPVESP(drone)
+    if FPVData[drone] then
+        pcall(function()
+            FPVData[drone].Box:Remove()
+            FPVData[drone].Name:Remove()
+            FPVData[drone].Distance:Remove()
+        end)
+        FPVData[drone] = nil
+    end
+end
+
+local function HideFPVESP(esp)
+    if esp then
+        esp.Box.Visible = false
+        esp.Name.Visible = false
+        esp.Distance.Visible = false
+    end
+end
+
+-- Clean up destroyed drones
+local function CleanupFPVESP()
+    for drone, esp in pairs(FPVData) do
+        if not drone or not drone.Parent then
+            DestroyFPVESP(drone)
+        end
+    end
+end
+
+-- Render FPV drones
+local function RenderFPVDrones()
+    if not ESPEnabled or not FPVESPEnabled then
+        -- Hide all FPV ESP if disabled
+        for _, esp in pairs(FPVData) do
+            HideFPVESP(esp)
+        end
+        return
+    end
+    
+    -- Scan for drones
+    FPVDrones = ScanForFPVDrones()
+    CleanupFPVESP()
+    
+    local myPosition = nil
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        myPosition = LocalPlayer.Character.HumanoidRootPart.Position
+    end
+    
+    for drone, trackPart in pairs(FPVDrones) do
+        if trackPart and trackPart.Parent then
+            local pos, onScreen = Camera:WorldToViewportPoint(trackPart.Position)
+            
+            if onScreen and pos.Z > 0 then
+                -- Create ESP if it doesn't exist
+                if not FPVData[drone] then
+                    CreateFPVESP(drone)
+                end
+                
+                local esp = FPVData[drone]
+                
+                -- Calculate distance
+                local distance = "?"
+                if myPosition then
+                    local dist = math.floor((trackPart.Position - myPosition).Magnitude)
+                    distance = tostring(dist) .. "m"
+                end
+                
+                -- Calculate box size based on distance
+                local scale = 1000 / pos.Z
+                local boxSize = math.clamp(scale, 30, 150)
+                
+                -- Render Box
+                if FPVBoxESPEnabled then
+                    esp.Box.Size = Vector2.new(boxSize, boxSize)
+                    esp.Box.Position = Vector2.new(pos.X - boxSize / 2, pos.Y - boxSize / 2)
+                    esp.Box.Visible = true
+                else
+                    esp.Box.Visible = false
+                end
+                
+                -- Render Name
+                if FPVNameESPEnabled then
+                    esp.Name.Position = Vector2.new(pos.X, pos.Y - boxSize / 2 - 15)
+                    esp.Name.Visible = true
+                else
+                    esp.Name.Visible = false
+                end
+                
+                -- Render Distance
+                if FPVDistanceESPEnabled then
+                    esp.Distance.Position = Vector2.new(pos.X, pos.Y + boxSize / 2 + 10)
+                    esp.Distance.Text = distance
+                    esp.Distance.Visible = true
+                else
+                    esp.Distance.Visible = false
+                end
+            else
+                -- Hide if off-screen
+                if FPVData[drone] then
+                    HideFPVESP(FPVData[drone])
+                end
+            end
+        end
+    end
+end
+
+-- ========== AIMBOT KEYBIND HANDLING ==========
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if AimbotMode == "Toggle" and input.KeyCode == AimbotKey then
+        AimbotActive = not AimbotActive
+        if AimbotActive then
+            Rayfield:Notify({Title = "Aimbot", Content = "Enabled (Toggle Mode)", Duration = 1})
+        else
+            Rayfield:Notify({Title = "Aimbot", Content = "Disabled (Toggle Mode)", Duration = 1})
+        end
+    elseif AimbotMode == "Hold" and input.KeyCode == AimbotKey then
+        AimbotActive = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if AimbotMode == "Hold" and input.KeyCode == AimbotKey then
+        AimbotActive = false
+    end
+end)
 
 -- --- THE LOST FRONT SPECIFIC ENGINE CHECKS ---
 
@@ -67,6 +300,7 @@ local function IsTeammate(player)
     if not myChar or not myChar.Parent then return false end
     if not theirChar or not theirChar.Parent then return false end
     
+    -- Team check based on same parent (team spawn area)
     if myChar.Parent == theirChar.Parent then return true end
     
     return false
@@ -101,7 +335,7 @@ local function GetAimOriginPosition()
 end
 
 local function UpdateClosestTarget()
-    if not SilentAimEnabled and not TriggerbotEnabled then 
+    if not SilentAimEnabled and not TriggerbotEnabled and not AimbotEnabled then 
         CurrentTarget = nil
         return 
     end
@@ -133,7 +367,30 @@ local function UpdateClosestTarget()
     CurrentTarget = closestPlayer
 end
 
--- --- ESP SYSTEM ---
+-- ========== AIMBOT MOVEMENT FUNCTION ==========
+local function DoAimbot()
+    if not AimbotEnabled or not AimbotActive then return end
+    if not CurrentTarget then return end
+    
+    local targetPos = CurrentTarget.Position
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
+    
+    if not onScreen then return end
+    
+    local targetScreen = Vector2.new(screenPos.X, screenPos.Y)
+    local currentMouse = UserInputService:GetMouseLocation()
+    local delta = targetScreen - currentMouse
+    
+    -- Apply smoothing
+    local smoothedDelta = delta * AimbotSmoothing
+    
+    -- Move mouse (works on PC)
+    pcall(function()
+        mousemoverel(smoothedDelta.X, smoothedDelta.Y)
+    end)
+end
+
+-- --- ESP SYSTEM (PLAYERS) ---
 
 local function CreateESP(player)
     local esp = {}
@@ -198,6 +455,7 @@ Players.PlayerAdded:Connect(CreateESP)
 
 -- --- INDEPENDENT THREADS ---
 
+-- Triggerbot thread
 task.spawn(function()
     while task.wait(0.1) do
         if TriggerbotEnabled and CurrentTarget then
@@ -210,6 +468,7 @@ task.spawn(function()
     end
 end)
 
+-- Desync thread
 task.spawn(function()
     while task.wait(0.05) do
         if DesyncEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
@@ -224,11 +483,23 @@ task.spawn(function()
     end
 end)
 
+-- FPV Drone scan thread (runs less frequently)
+task.spawn(function()
+    while task.wait(0.5) do
+        if ESPEnabled and FPVESPEnabled then
+            FPVDrones = ScanForFPVDrones()
+        end
+    end
+end)
+
 -- --- MAIN RENDER LOOP ---
 
 RunService.RenderStepped:Connect(function()
     pcall(function()
         UpdateClosestTarget()
+        
+        -- Run aimbot after target is updated
+        DoAimbot()
 
         if ShowFOV then
             FOVCircle.Position = GetAimOriginPosition()
@@ -246,6 +517,10 @@ RunService.RenderStepped:Connect(function()
             end
         end
 
+        -- Render FPV Drones
+        RenderFPVDrones()
+
+        -- Render Player ESP
         for player, esp in pairs(ESPData) do
             local char = player.Character
             local isAlive = char and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0
@@ -374,26 +649,169 @@ local ESPTab = Window:CreateTab("Visuals", nil)
 local MiscTab = Window:CreateTab("Misc", nil)
 local CreditsTab = Window:CreateTab("Credits", nil)
 
--- Combat
-CombatTab:CreateToggle({Name = "Enable Silent Aim", CurrentValue = false, Callback = function(v) SilentAimEnabled = v end})
-CombatTab:CreateToggle({Name = "Enable Triggerbot (Auto Shoot)", CurrentValue = false, Callback = function(v) TriggerbotEnabled = v end})
-CombatTab:CreateToggle({Name = "Wall Check (Visible Only)", CurrentValue = true, Callback = function(v) WallCheck = v end})
-CombatTab:CreateToggle({Name = "Show FOV Circle", CurrentValue = false, Callback = function(v) ShowFOV = v end})
-CombatTab:CreateSlider({Name = "FOV Radius", Range = {10, 500}, Increment = 1, Suffix = "px", CurrentValue = 100, Callback = function(v) FOVRadius = v end})
-CombatTab:CreateDropdown({Name = "Aim Target Part", Options = {"Head", "HumanoidRootPart", "UpperTorso"}, CurrentOption = {"Head"}, Callback = function(v) AimPart = v[1] end})
-CombatTab:CreateDropdown({Name = "Aim Origin (Center is best for Mobile)", Options = {"Center Screen", "Mouse"}, CurrentOption = {"Center Screen"}, Callback = function(v) AimOrigin = v[1] end})
+-- ========== COMBAT TAB ==========
+CombatTab:CreateToggle({
+    Name = "Enable Silent Aim",
+    CurrentValue = false,
+    Callback = function(v) SilentAimEnabled = v end
+})
 
--- ESP
-ESPTab:CreateToggle({Name = "Master ESP Enable", CurrentValue = false, Callback = function(v) ESPEnabled = v end})
-ESPTab:CreateToggle({Name = "Hide Teammates / Spectators", CurrentValue = true, Callback = function(v) TeamCheck = v end})
-ESPTab:CreateToggle({Name = "Box ESP", CurrentValue = true, Callback = function(v) BoxESPEnabled = v end})
-ESPTab:CreateToggle({Name = "Name ESP", CurrentValue = true, Callback = function(v) NameESPEnabled = v end})
-ESPTab:CreateToggle({Name = "Health Bar ESP", CurrentValue = true, Callback = function(v) HealthESPEnabled = v end})
-ESPTab:CreateToggle({Name = "Distance ESP", CurrentValue = true, Callback = function(v) DistanceESPEnabled = v end})
-ESPTab:CreateToggle({Name = "Skeleton ESP", CurrentValue = false, Callback = function(v) SkeletonESPEnabled = v end})
+CombatTab:CreateToggle({
+    Name = "Enable Aimbot (Mouse Movement)",
+    CurrentValue = false,
+    Callback = function(v) AimbotEnabled = v end
+})
 
--- Misc
-MiscTab:CreateToggle({Name = "Desync (Anti-Aim / Dodge Bullets)", CurrentValue = false, Callback = function(v) DesyncEnabled = v end})
+CombatTab:CreateToggle({
+    Name = "Enable Triggerbot (Auto Shoot)",
+    CurrentValue = false,
+    Callback = function(v) TriggerbotEnabled = v end
+})
+
+CombatTab:CreateToggle({
+    Name = "Wall Check (Visible Only)",
+    CurrentValue = true,
+    Callback = function(v) WallCheck = v end
+})
+
+CombatTab:CreateToggle({
+    Name = "Show FOV Circle",
+    CurrentValue = false,
+    Callback = function(v) ShowFOV = v end
+})
+
+CombatTab:CreateSlider({
+    Name = "FOV Radius",
+    Range = {10, 500},
+    Increment = 1,
+    Suffix = "px",
+    CurrentValue = 100,
+    Callback = function(v) FOVRadius = v end
+})
+
+CombatTab:CreateSlider({
+    Name = "Aimbot Smoothing",
+    Range = {0.05, 0.95},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = 0.3,
+    Callback = function(v) AimbotSmoothing = v end
+})
+
+CombatTab:CreateDropdown({
+    Name = "Aim Target Part",
+    Options = {"Head", "HumanoidRootPart", "UpperTorso"},
+    CurrentOption = {"Head"},
+    Callback = function(v) AimPart = v[1] end
+})
+
+CombatTab:CreateDropdown({
+    Name = "Aim Origin (Center is best for Mobile)",
+    Options = {"Center Screen", "Mouse"},
+    CurrentOption = {"Center Screen"},
+    Callback = function(v) AimOrigin = v[1] end
+})
+
+CombatTab:CreateDropdown({
+    Name = "Aimbot Activation Mode",
+    Options = {"Hold", "Toggle"},
+    CurrentOption = {"Hold"},
+    Callback = function(v) AimbotMode = v[1] end
+})
+
+CombatTab:CreateKeybind({
+    Name = "Aimbot Keybind",
+    CurrentKeybind = "LeftAlt",
+    Callback = function(key) AimbotKey = key end
+})
+
+-- ========== ESP TAB ==========
+ESPTab:CreateToggle({
+    Name = "Master ESP Enable",
+    CurrentValue = false,
+    Callback = function(v) ESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "Hide Teammates / Spectators",
+    CurrentValue = true,
+    Callback = function(v) TeamCheck = v end
+})
+
+-- ========== FPV DRONE ESP SECTION ==========
+ESPTab:CreateSection("FPV Drone ESP")
+
+ESPTab:CreateToggle({
+    Name = "Enable FPV Drone ESP",
+    CurrentValue = false,
+    Callback = function(v) 
+        FPVESPEnabled = v
+        if not v then
+            -- Clean up all FPV ESP when disabled
+            for drone, esp in pairs(FPVData) do
+                DestroyFPVESP(drone)
+            end
+        end
+    end
+})
+
+ESPTab:CreateToggle({
+    Name = "FPV Drone Box ESP",
+    CurrentValue = true,
+    Callback = function(v) FPVBoxESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "FPV Drone Name ESP",
+    CurrentValue = true,
+    Callback = function(v) FPVNameESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "FPV Drone Distance ESP",
+    CurrentValue = true,
+    Callback = function(v) FPVDistanceESPEnabled = v end
+})
+
+ESPTab:CreateSection("Player ESP")
+
+ESPTab:CreateToggle({
+    Name = "Box ESP",
+    CurrentValue = true,
+    Callback = function(v) BoxESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "Name ESP",
+    CurrentValue = true,
+    Callback = function(v) NameESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "Health Bar ESP",
+    CurrentValue = true,
+    Callback = function(v) HealthESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "Distance ESP",
+    CurrentValue = true,
+    Callback = function(v) DistanceESPEnabled = v end
+})
+
+ESPTab:CreateToggle({
+    Name = "Skeleton ESP",
+    CurrentValue = false,
+    Callback = function(v) SkeletonESPEnabled = v end
+})
+
+-- ========== MISC TAB ==========
+MiscTab:CreateToggle({
+    Name = "Desync (Anti-Aim / Dodge Bullets)",
+    CurrentValue = false,
+    Callback = function(v) DesyncEnabled = v end
+})
+
 MiscTab:CreateToggle({
     Name = "Disable Fog / Clear Atmosphere",
     CurrentValue = false,
@@ -409,10 +827,15 @@ MiscTab:CreateToggle({
     end
 })
 
--- Credits
+-- ========== CREDITS TAB ==========
 CreditsTab:CreateSection("Information")
 CreditsTab:CreateLabel("Script Developer: ZAXV3")
-CreditsTab:CreateLabel("Hello there! i would like to say that this script is entirely open-source! feel free to add your own features to this script. All i ask is your support for this open-source script and to also credit me in your modified fork of this script. Thank you for understanding and i hope you have a nice day! ♥")
+CreditsTab:CreateLabel("Hello there! I would like to say that this script is entirely open-source! Feel free to add your own features to this script. All I ask is your support for this open-source script and to also credit me in your modified fork of this script. Thank you for understanding and I hope you have a nice day! ♥")
 CreditsTab:CreateLabel("UI Library: Rayfield")
 
-Rayfield:Notify({Title = "Loaded Successfully", Content = "V1.7 Loaded. Enjoy!", Duration = 4})
+-- Final notification
+Rayfield:Notify({
+    Title = "Loaded Successfully",
+    Content = "V1.7 Loaded with Aimbot + FPV Drone ESP! Enjoy!",
+    Duration = 4
+})
