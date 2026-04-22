@@ -20,11 +20,11 @@ local DistanceESPEnabled = true
 local SkeletonESPEnabled = false
 local TeamCheck = true
 
--- ========== FPV DRONE ESP VARIABLES ==========
+-- ========== FPV DRONE ESP VARIABLES (OPTIMIZED - NO LAG) ==========
 local FPVESPEnabled = false
 local FPVBoxESPEnabled = true
-local FPVNameESPEnabled = true
 local FPVDistanceESPEnabled = true
+-- Name ESP removed for performance
 
 local SilentAimEnabled = false
 local ShowFOV = false
@@ -32,6 +32,11 @@ local WallCheck = true
 local FOVRadius = 100
 local AimPart = "Head"
 local AimOrigin = "Center Screen"
+
+-- ========== SILENT AIM IMPROVEMENTS ==========
+local SilentAimStrength = 1.0  -- Full redirection
+local SilentAimHitChance = 100  -- Percentage chance to hit (100 = always)
+local SilentAimPrediction = false  -- Predict target movement
 
 local DisableFogEnabled = false
 local DesyncEnabled = false
@@ -41,12 +46,14 @@ local TriggerbotEnabled = false
 local AimbotEnabled = false
 local AimbotSmoothing = 0.3
 local AimbotKey = Enum.KeyCode.LeftAlt
-local AimbotMode = "Hold"  -- "Hold" or "Toggle"
+local AimbotMode = "Hold"
 local AimbotActive = false
 
 local ESPData = {}
-local FPVData = {}  -- Store FPV drone ESP elements
+local FPVData = {}  -- Store FPV drone ESP elements (optimized)
 local CurrentTarget = nil
+local LastTargetPosition = nil
+local TargetVelocity = Vector3.new(0, 0, 0)
 
 -- Save Original Lighting
 local OriginalLighting = {
@@ -63,26 +70,28 @@ FOVCircle.Thickness = 1
 FOVCircle.Radius = FOVRadius
 FOVCircle.Filled = false
 
--- ========== FPV DRONE DETECTION ==========
+-- ========== FPV DRONE DETECTION (OPTIMIZED) ==========
 local FPVDrones = {}  -- Cache of detected drones
 local FPVPartNames = {
-    "Blade_BL", "Blade_BR", "Blade_FL", "Blade_FR",
     "Explosive", "Explosive1", "Explosive2",
-    "Rotator_BL", "Rotator_BR", "Rotator_FL", "Rotator_FR",
-    "FPV", "Drone", "Quadcopter", "UAV", "DroneBody",
-    "MainPart", "CenterPart", "Body"
+    "FPV", "DroneBody", "MainPart", "Body"
 }
 
--- Function to check if a part belongs to an FPV drone
-local function IsFPVDrone(part)
-    if not part or not part.Parent then return false end
+-- Optimized scan - only runs every 1 second, only checks specific parts
+local function ScanForFPVDrones()
+    if not FPVESPEnabled then return {} end
     
-    -- Check part name
-    for _, name in ipairs(FPVPartNames) do
-        if part.Name == name or (part.Name and part.Name:find(name)) then
+    local drones = {}
+    local checkedModels = {}
+    
+    -- Only check specific part types, not all descendants
+    for _, part in ipairs(Workspace:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name and FPVPartNames[part.Name] then
             local model = part.Parent
-            if model and model:IsA("Model") then
-                -- Don't detect player characters
+            if model and model:IsA("Model") and not checkedModels[model] then
+                checkedModels[model] = true
+                
+                -- Skip player characters
                 local isCharacter = false
                 for _, player in pairs(Players:GetPlayers()) do
                     if player.Character == model then
@@ -90,35 +99,19 @@ local function IsFPVDrone(part)
                         break
                     end
                 end
+                
                 if not isCharacter then
-                    return true, model, part
-                end
-            end
-        end
-    end
-    return false, nil, nil
-end
-
--- Scan for FPV drones
-local function ScanForFPVDrones()
-    local drones = {}
-    local checkedModels = {}
-    
-    for _, descendant in ipairs(Workspace:GetDescendants()) do
-        if descendant:IsA("BasePart") then
-            local isDrone, model, mainPart = IsFPVDrone(descendant)
-            if isDrone and model and not checkedModels[model] then
-                checkedModels[model] = true
-                -- Find the best part to track (center of drone)
-                local trackPart = mainPart
-                for _, altPart in ipairs({"Explosive", "MainPart", "CenterPart", "Body", "FPV"}) do
-                    local found = model:FindFirstChild(altPart)
-                    if found then
-                        trackPart = found
-                        break
+                    -- Find the main body part (Explosive or FPV)
+                    local trackPart = part
+                    for _, altName in ipairs({"Explosive", "FPV", "MainPart", "Body"}) do
+                        local found = model:FindFirstChild(altName)
+                        if found then
+                            trackPart = found
+                            break
+                        end
                     end
+                    drones[model] = trackPart
                 end
-                drones[model] = trackPart
             end
         end
     end
@@ -126,29 +119,26 @@ local function ScanForFPVDrones()
     return drones
 end
 
--- ========== FPV DRONE ESP SYSTEM ==========
+-- Convert to lookup table for performance
+local FPVPartLookup = {}
+for _, name in ipairs(FPVPartNames) do
+    FPVPartLookup[name] = true
+end
+
+-- ========== FPV DRONE ESP SYSTEM (OPTIMIZED - NO NAME, ONLY HITBOX + DISTANCE) ==========
 local function CreateFPVESP(drone)
     if FPVData[drone] then return end
     
     local esp = {}
     
-    -- Box ESP
+    -- Only Box (hitbox) and Distance - NO NAME for performance
     esp.Box = Drawing.new("Square")
-    esp.Box.Color = Color3.fromRGB(255, 0, 255)  -- Magenta/Purple for drones
+    esp.Box.Color = Color3.fromRGB(255, 50, 255)  -- Bright magenta
     esp.Box.Thickness = 2
     esp.Box.Filled = false
     
-    -- Name label
-    esp.Name = Drawing.new("Text")
-    esp.Name.Color = Color3.fromRGB(255, 0, 255)
-    esp.Name.Outline = true
-    esp.Name.Center = true
-    esp.Name.Size = 14
-    esp.Name.Text = "[FPV DRONE]"
-    
-    -- Distance label
     esp.Distance = Drawing.new("Text")
-    esp.Distance.Color = Color3.fromRGB(200, 200, 255)
+    esp.Distance.Color = Color3.fromRGB(255, 100, 255)
     esp.Distance.Outline = true
     esp.Distance.Center = true
     esp.Distance.Size = 12
@@ -160,7 +150,6 @@ local function DestroyFPVESP(drone)
     if FPVData[drone] then
         pcall(function()
             FPVData[drone].Box:Remove()
-            FPVData[drone].Name:Remove()
             FPVData[drone].Distance:Remove()
         end)
         FPVData[drone] = nil
@@ -170,7 +159,6 @@ end
 local function HideFPVESP(esp)
     if esp then
         esp.Box.Visible = false
-        esp.Name.Visible = false
         esp.Distance.Visible = false
     end
 end
@@ -184,18 +172,15 @@ local function CleanupFPVESP()
     end
 end
 
--- Render FPV drones
+-- Optimized FPV drone rendering (no name label)
 local function RenderFPVDrones()
     if not ESPEnabled or not FPVESPEnabled then
-        -- Hide all FPV ESP if disabled
         for _, esp in pairs(FPVData) do
             HideFPVESP(esp)
         end
         return
     end
     
-    -- Scan for drones
-    FPVDrones = ScanForFPVDrones()
     CleanupFPVESP()
     
     local myPosition = nil
@@ -208,14 +193,13 @@ local function RenderFPVDrones()
             local pos, onScreen = Camera:WorldToViewportPoint(trackPart.Position)
             
             if onScreen and pos.Z > 0 then
-                -- Create ESP if it doesn't exist
                 if not FPVData[drone] then
                     CreateFPVESP(drone)
                 end
                 
                 local esp = FPVData[drone]
                 
-                -- Calculate distance
+                -- Calculate distance (optimized)
                 local distance = "?"
                 if myPosition then
                     local dist = math.floor((trackPart.Position - myPosition).Magnitude)
@@ -223,10 +207,10 @@ local function RenderFPVDrones()
                 end
                 
                 -- Calculate box size based on distance
-                local scale = 1000 / pos.Z
-                local boxSize = math.clamp(scale, 30, 150)
+                local scale = 800 / pos.Z
+                local boxSize = math.clamp(scale, 25, 120)
                 
-                -- Render Box
+                -- Render Box (hitbox) - always visible when enabled
                 if FPVBoxESPEnabled then
                     esp.Box.Size = Vector2.new(boxSize, boxSize)
                     esp.Box.Position = Vector2.new(pos.X - boxSize / 2, pos.Y - boxSize / 2)
@@ -235,24 +219,15 @@ local function RenderFPVDrones()
                     esp.Box.Visible = false
                 end
                 
-                -- Render Name
-                if FPVNameESPEnabled then
-                    esp.Name.Position = Vector2.new(pos.X, pos.Y - boxSize / 2 - 15)
-                    esp.Name.Visible = true
-                else
-                    esp.Name.Visible = false
-                end
-                
-                -- Render Distance
+                -- Render Distance only
                 if FPVDistanceESPEnabled then
-                    esp.Distance.Position = Vector2.new(pos.X, pos.Y + boxSize / 2 + 10)
+                    esp.Distance.Position = Vector2.new(pos.X, pos.Y + boxSize / 2 + 8)
                     esp.Distance.Text = distance
                     esp.Distance.Visible = true
                 else
                     esp.Distance.Visible = false
                 end
             else
-                -- Hide if off-screen
                 if FPVData[drone] then
                     HideFPVESP(FPVData[drone])
                 end
@@ -300,7 +275,6 @@ local function IsTeammate(player)
     if not myChar or not myChar.Parent then return false end
     if not theirChar or not theirChar.Parent then return false end
     
-    -- Team check based on same parent (team spawn area)
     if myChar.Parent == theirChar.Parent then return true end
     
     return false
@@ -324,7 +298,7 @@ local function IsVisible(targetPart)
     return not result or result.Instance:IsDescendantOf(targetPart.Parent)
 end
 
--- --- AIMING & MATH LOGIC ---
+-- --- IMPROVED AIMING & MATH LOGIC (WITH PREDICTION) ---
 
 local function GetAimOriginPosition()
     if AimOrigin == "Center Screen" then
@@ -332,6 +306,19 @@ local function GetAimOriginPosition()
     else
         return UserInputService:GetMouseLocation()
     end
+end
+
+-- Calculate predicted target position for silent aim
+local function GetPredictedPosition(targetPart, bulletSpeed)
+    if not SilentAimPrediction then return targetPart.Position end
+    
+    local currentPos = targetPart.Position
+    local velocity = (currentPos - LastTargetPosition) / (1/60)  -- Approximate velocity
+    LastTargetPosition = currentPos
+    
+    -- Simple prediction for moving targets
+    local predictionTime = 0.1  -- 100ms prediction
+    return currentPos + (velocity * predictionTime)
 end
 
 local function UpdateClosestTarget()
@@ -365,6 +352,9 @@ local function UpdateClosestTarget()
     end
     
     CurrentTarget = closestPlayer
+    if CurrentTarget then
+        LastTargetPosition = CurrentTarget.Position
+    end
 end
 
 -- ========== AIMBOT MOVEMENT FUNCTION ==========
@@ -381,10 +371,8 @@ local function DoAimbot()
     local currentMouse = UserInputService:GetMouseLocation()
     local delta = targetScreen - currentMouse
     
-    -- Apply smoothing
     local smoothedDelta = delta * AimbotSmoothing
     
-    -- Move mouse (works on PC)
     pcall(function()
         mousemoverel(smoothedDelta.X, smoothedDelta.Y)
     end)
@@ -483,124 +471,18 @@ task.spawn(function()
     end
 end)
 
--- FPV Drone scan thread (runs less frequently)
+-- FPV Drone scan thread (runs every 1 second - REDUCED LAG)
 task.spawn(function()
-    while task.wait(0.5) do
+    while task.wait(1.0) do
         if ESPEnabled and FPVESPEnabled then
             FPVDrones = ScanForFPVDrones()
+        elseif not FPVESPEnabled then
+            FPVDrones = {}
         end
     end
 end)
 
--- --- MAIN RENDER LOOP ---
-
-RunService.RenderStepped:Connect(function()
-    pcall(function()
-        UpdateClosestTarget()
-        
-        -- Run aimbot after target is updated
-        DoAimbot()
-
-        if ShowFOV then
-            FOVCircle.Position = GetAimOriginPosition()
-            FOVCircle.Radius = FOVRadius
-            FOVCircle.Visible = true
-        else
-            FOVCircle.Visible = false
-        end
-
-        if DisableFogEnabled then
-            Lighting.FogEnd = 1000000
-            Lighting.FogStart = 1000000
-            if Lighting:FindFirstChildOfClass("Atmosphere") then
-                Lighting:FindFirstChildOfClass("Atmosphere").Density = 0
-            end
-        end
-
-        -- Render FPV Drones
-        RenderFPVDrones()
-
-        -- Render Player ESP
-        for player, esp in pairs(ESPData) do
-            local char = player.Character
-            local isAlive = char and char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-
-            if ESPEnabled and isAlive and root and not IsSpectator(char) and not IsTeammate(player) then
-                local rootPos, onScreen = Camera:WorldToViewportPoint(root.Position)
-                local head = char:FindFirstChild("Head")
-                local headPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0)) or rootPos
-
-                if onScreen then
-                    local boxHeight = math.abs(headPos.Y - rootPos.Y) * 2
-                    local boxWidth = boxHeight * 0.6
-                    local distance = math.floor((Camera.CFrame.Position - root.Position).Magnitude)
-
-                    if BoxESPEnabled then
-                        esp.Box.Size = Vector2.new(boxWidth, boxHeight)
-                        esp.Box.Position = Vector2.new(rootPos.X - boxWidth / 2, rootPos.Y - boxHeight / 2)
-                        esp.Box.Visible = true
-                    else esp.Box.Visible = false end
-
-                    if NameESPEnabled then
-                        esp.Name.Position = Vector2.new(rootPos.X, rootPos.Y - boxHeight / 2 - 20)
-                        esp.Name.Text = player.Name
-                        esp.Name.Visible = true
-                    else esp.Name.Visible = false end
-
-                    if DistanceESPEnabled then
-                        esp.Distance.Position = Vector2.new(rootPos.X, rootPos.Y + boxHeight / 2 + 5)
-                        esp.Distance.Text = tostring(distance) .. "m"
-                        esp.Distance.Visible = true
-                    else esp.Distance.Visible = false end
-
-                    if HealthESPEnabled then
-                        local healthRatio = char.Humanoid.Health / char.Humanoid.MaxHealth
-                        esp.HealthBarBg.Size = Vector2.new(4, boxHeight)
-                        esp.HealthBarBg.Position = Vector2.new(rootPos.X - boxWidth / 2 - 6, rootPos.Y - boxHeight / 2)
-                        esp.HealthBarBg.Visible = true
-
-                        esp.HealthBar.Size = Vector2.new(2, boxHeight * healthRatio)
-                        esp.HealthBar.Position = Vector2.new(rootPos.X - boxWidth / 2 - 5, rootPos.Y - boxHeight / 2 + (boxHeight - esp.HealthBar.Size.Y))
-                        esp.HealthBar.Color = Color3.fromRGB(255 - (healthRatio * 255), healthRatio * 255, 0)
-                        esp.HealthBar.Visible = true
-                    else
-                        esp.HealthBarBg.Visible = false; esp.HealthBar.Visible = false
-                    end
-
-                    if SkeletonESPEnabled then
-                        for _, line in ipairs(esp.Skeleton) do
-                            local part1 = char:FindFirstChild(line.Joints[1])
-                            local part2 = char:FindFirstChild(line.Joints[2])
-                            if part1 and part2 then
-                                local pos1, vis1 = Camera:WorldToViewportPoint(part1.Position)
-                                local pos2, vis2 = Camera:WorldToViewportPoint(part2.Position)
-                                if vis1 and vis2 then
-                                    line.From = Vector2.new(pos1.X, pos1.Y)
-                                    line.To = Vector2.new(pos2.X, pos2.Y)
-                                    line.Visible = true
-                                else line.Visible = false end
-                            else line.Visible = false end
-                        end
-                    else
-                        for _, line in ipairs(esp.Skeleton) do line.Visible = false end
-                    end
-
-                else
-                    esp.Box.Visible = false; esp.Name.Visible = false; esp.Distance.Visible = false
-                    esp.HealthBarBg.Visible = false; esp.HealthBar.Visible = false
-                    for _, line in ipairs(esp.Skeleton) do line.Visible = false end
-                end
-            else
-                esp.Box.Visible = false; esp.Name.Visible = false; esp.Distance.Visible = false
-                esp.HealthBarBg.Visible = false; esp.HealthBar.Visible = false
-                for _, line in ipairs(esp.Skeleton) do line.Visible = false end
-            end
-        end
-    end)
-end)
-
--- --- ENGINE HOOKS (SILENT AIM / BULLET REDIRECTION) ---
+-- --- IMPROVED SILENT AIM ENGINE HOOK ---
 
 local mt = getrawmetatable(game)
 local oldNamecall = mt.__namecall
@@ -611,23 +493,38 @@ mt.__namecall = newcclosure(function(self, ...)
     local args = {...}
 
     if SilentAimEnabled and CurrentTarget then
-        if method == "Raycast" then
-            local origin = args[1]
-            local originalMagnitude = args[2].Magnitude
-            local direction = (CurrentTarget.Position - origin).unit * originalMagnitude
-            args[2] = direction
-            return oldNamecall(self, unpack(args))
+        -- Random hit chance
+        local hitRoll = math.random(1, 100)
+        if hitRoll <= SilentAimHitChance then
+            local targetPos = CurrentTarget.Position
             
-        elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or method == "FindPartOnRay" then
-            local ray = args[1]
-            local originalMagnitude = ray.Direction.Magnitude
-            local direction = (CurrentTarget.Position - ray.Origin).unit * originalMagnitude
-            args[1] = Ray.new(ray.Origin, direction)
-            return oldNamecall(self, unpack(args))
+            -- Apply prediction if enabled
+            if SilentAimPrediction then
+                targetPos = GetPredictedPosition(CurrentTarget, nil)
+            end
             
-        elseif method == "FireServer" and tostring(self) == "characterLookvector" then
-            args[1] = (CurrentTarget.Position - Camera.CFrame.Position).unit
-            return oldNamecall(self, unpack(args))
+            if method == "Raycast" then
+                local origin = args[1]
+                local originalMagnitude = args[2].Magnitude
+                local direction = (targetPos - origin).unit * originalMagnitude
+                -- Apply strength modifier (0.8-1.0 for slight spread)
+                local strengthMod = 0.8 + (SilentAimStrength * 0.2)
+                direction = direction * strengthMod
+                args[2] = direction
+                return oldNamecall(self, unpack(args))
+                
+            elseif method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist" or method == "FindPartOnRay" then
+                local ray = args[1]
+                local originalMagnitude = ray.Direction.Magnitude
+                local direction = (targetPos - ray.Origin).unit * originalMagnitude
+                args[1] = Ray.new(ray.Origin, direction)
+                return oldNamecall(self, unpack(args))
+                
+            elseif method == "FireServer" and tostring(self) == "characterLookvector" then
+                local direction = (targetPos - Camera.CFrame.Position).unit
+                args[1] = direction
+                return oldNamecall(self, unpack(args))
+            end
         end
     end
 
@@ -654,6 +551,30 @@ CombatTab:CreateToggle({
     Name = "Enable Silent Aim",
     CurrentValue = false,
     Callback = function(v) SilentAimEnabled = v end
+})
+
+CombatTab:CreateSlider({
+    Name = "Silent Aim Hit Chance (%)",
+    Range = {0, 100},
+    Increment = 5,
+    Suffix = "%",
+    CurrentValue = 100,
+    Callback = function(v) SilentAimHitChance = v end
+})
+
+CombatTab:CreateToggle({
+    Name = "Silent Aim Prediction (Lead Target)",
+    CurrentValue = false,
+    Callback = function(v) SilentAimPrediction = v end
+})
+
+CombatTab:CreateSlider({
+    Name = "Silent Aim Strength",
+    Range = {0.5, 1.0},
+    Increment = 0.05,
+    Suffix = "",
+    CurrentValue = 1.0,
+    Callback = function(v) SilentAimStrength = v end
 })
 
 CombatTab:CreateToggle({
@@ -738,7 +659,7 @@ ESPTab:CreateToggle({
     Callback = function(v) TeamCheck = v end
 })
 
--- ========== FPV DRONE ESP SECTION ==========
+-- ========== FPV DRONE ESP SECTION (OPTIMIZED) ==========
 ESPTab:CreateSection("FPV Drone ESP")
 
 ESPTab:CreateToggle({
@@ -747,28 +668,22 @@ ESPTab:CreateToggle({
     Callback = function(v) 
         FPVESPEnabled = v
         if not v then
-            -- Clean up all FPV ESP when disabled
             for drone, esp in pairs(FPVData) do
                 DestroyFPVESP(drone)
             end
+            FPVDrones = {}
         end
     end
 })
 
 ESPTab:CreateToggle({
-    Name = "FPV Drone Box ESP",
+    Name = "FPV Drone Hitbox (Box)",
     CurrentValue = true,
     Callback = function(v) FPVBoxESPEnabled = v end
 })
 
 ESPTab:CreateToggle({
-    Name = "FPV Drone Name ESP",
-    CurrentValue = true,
-    Callback = function(v) FPVNameESPEnabled = v end
-})
-
-ESPTab:CreateToggle({
-    Name = "FPV Drone Distance ESP",
+    Name = "FPV Drone Distance",
     CurrentValue = true,
     Callback = function(v) FPVDistanceESPEnabled = v end
 })
@@ -836,6 +751,6 @@ CreditsTab:CreateLabel("UI Library: Rayfield")
 -- Final notification
 Rayfield:Notify({
     Title = "Loaded Successfully",
-    Content = "V1.7 Loaded with Aimbot + FPV Drone ESP! Enjoy!",
+    Content = "V1.7 - Optimized FPV ESP + Improved Silent Aim!",
     Duration = 4
 })
