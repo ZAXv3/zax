@@ -1,5 +1,5 @@
 -- Product Purchase Faker (Improved)
--- Mobile-friendly rewrite with minimize/destroy, proper layout, and working listener
+-- v2 - Added scanner, clear logs, bulk fix, safe zone, floating mode
 
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -19,10 +19,11 @@ local function isMobile()
 end
 
 -- ─────────────────────────────────────────────
--- CONSTANTS
+-- CONSTANTS with Safe Zone
 -- ─────────────────────────────────────────────
-local GUI_WIDTH  = isMobile() and math.min(getScreenSize().X - 20, 380) or 520
-local GUI_HEIGHT = isMobile() and math.min(getScreenSize().Y - 40, 460) or 390
+local SAFE_INSET = isMobile() and getScreenSize().X * 0.02 or 0
+local GUI_WIDTH  = isMobile() and math.min(getScreenSize().X - SAFE_INSET*2, 380) or 520
+local GUI_HEIGHT = isMobile() and math.min(getScreenSize().Y - SAFE_INSET*2, 460) or 390
 
 local COLOR_BG        = Color3.fromRGB(22, 23, 30)
 local COLOR_HEADER    = Color3.fromRGB(30, 32, 42)
@@ -227,7 +228,7 @@ pagesContainer.BorderSizePixel = 0
 pagesContainer.Parent = contentArea
 
 -- ─────────────────────────────────────────────
--- SCANNER TAB
+-- IMPROVED SCANNER TAB (real product scanner)
 -- ─────────────────────────────────────────────
 local scanPage = Instance.new("ScrollingFrame")
 scanPage.Name = "ScanPage"
@@ -246,13 +247,29 @@ scanLayout.Padding = UDim.new(0, 6)
 scanLayout.SortOrder = Enum.SortOrder.LayoutOrder
 scanLayout.Parent = scanPage
 
--- info label in scanner tab
+-- Clear button for scanner
+local clearScanBtn = Instance.new("TextButton")
+clearScanBtn.Text = "🗑 Clear Logs"
+clearScanBtn.Size = UDim2.new(1, 0, 0, 32)
+clearScanBtn.BackgroundColor3 = COLOR_INACTIVE
+clearScanBtn.TextColor3 = COLOR_WHITE
+clearScanBtn.BorderSizePixel = 0
+clearScanBtn.Parent = scanPage
+applyCorner(clearScanBtn, 8)
+clearScanBtn.MouseButton1Click:Connect(function()
+    for _, child in ipairs(scanPage:GetChildren()) do
+        if child:IsA("Frame") and child ~= clearScanBtn then 
+            child:Destroy() 
+        end
+    end
+end)
+
 local scanInfo = makeLabel(scanPage, "🔎  Products detected in this session will appear here.", 13, COLOR_TEXT_DIM, Enum.TextXAlignment.Left, false)
 scanInfo.Size = UDim2.new(1, 0, 0, 40)
 scanInfo.TextWrapped = true
 
 -- ─────────────────────────────────────────────
--- LISTENER TAB
+-- IMPROVED LISTENER TAB (with clear button)
 -- ─────────────────────────────────────────────
 local listenerPage = Instance.new("ScrollingFrame")
 listenerPage.Name = "ListenerPage"
@@ -271,12 +288,29 @@ listenerLayout.Padding = UDim.new(0, 6)
 listenerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listenerLayout.Parent = listenerPage
 
+-- Clear button for listener
+local clearListenerBtn = Instance.new("TextButton")
+clearListenerBtn.Text = "🗑 Clear Logs"
+clearListenerBtn.Size = UDim2.new(1, 0, 0, 32)
+clearListenerBtn.BackgroundColor3 = COLOR_INACTIVE
+clearListenerBtn.TextColor3 = COLOR_WHITE
+clearListenerBtn.BorderSizePixel = 0
+clearListenerBtn.Parent = listenerPage
+applyCorner(clearListenerBtn, 8)
+clearListenerBtn.MouseButton1Click:Connect(function()
+    for _, child in ipairs(listenerPage:GetChildren()) do
+        if child:IsA("Frame") and child ~= clearListenerBtn and child ~= listenerInfo then
+            child:Destroy()
+        end
+    end
+end)
+
 local listenerInfo = makeLabel(listenerPage, "📡  Purchase signals fired this session will be logged here.", 13, COLOR_TEXT_DIM, Enum.TextXAlignment.Left, false)
 listenerInfo.Size = UDim2.new(1, 0, 0, 40)
 listenerInfo.TextWrapped = true
 
 -- ─────────────────────────────────────────────
--- ACTION TAB
+-- ACTION TAB (improved)
 -- ─────────────────────────────────────────────
 local actionPage = Instance.new("Frame")
 actionPage.Name = "ActionPage"
@@ -330,7 +364,7 @@ idIcon.Parent = inputCard
 
 local ProductIDInput = Instance.new("TextBox")
 ProductIDInput.Name = "ProductIDInput"
-ProductIDInput.PlaceholderText = "Enter Product ID..."
+ProductIDInput.PlaceholderText = "Enter Product ID (or 123,456 for bulk)..."
 ProductIDInput.Text = ""
 ProductIDInput.TextSize = isMobile() and 15 or 14
 ProductIDInput.TextColor3 = COLOR_YELLOW
@@ -344,6 +378,16 @@ ProductIDInput.TextWrapped = false
 ProductIDInput.Size = UDim2.new(1, -44, 1, 0)
 ProductIDInput.Position = UDim2.new(0, 40, 0, 0)
 ProductIDInput.Parent = inputCard
+
+-- Numeric validation on ProductIDInput
+ProductIDInput:GetPropertyChangedSignal("Text"):Connect(function()
+    if ProductIDInput.Text ~= "" and not ProductIDInput.Text:find(",") then
+        local num = tonumber(ProductIDInput.Text:match("%d+"))
+        if not num then
+            ProductIDInput.Text = ProductIDInput.Text:gsub("%D", "")
+        end
+    end
+end)
 
 -- Action buttons grid
 local btnGrid = Instance.new("Frame")
@@ -410,6 +454,11 @@ statusLabel.Size = UDim2.new(1, 0, 0, 22)
 statusLabel.LayoutOrder = 4
 statusLabel.Parent = actionPage
 
+-- Last fired label
+local lastFiredLabel = makeLabel(actionPage, "Last fired: none", 12, COLOR_YELLOW, Enum.TextXAlignment.Left, false)
+lastFiredLabel.LayoutOrder = 5
+lastFiredLabel.Size = UDim2.new(1, 0, 0, 18)
+
 local function showStatus(msg, isError)
     statusLabel.TextColor3 = isError and COLOR_RED or COLOR_GREEN
     statusLabel.Text = msg
@@ -441,22 +490,181 @@ listenerTabBtn.MouseButton1Click:Connect(function() switchTab(2) end)
 actionTabBtn.MouseButton1Click:Connect(function() switchTab(3) end)
 
 -- ─────────────────────────────────────────────
--- MINIMIZE / DESTROY
+-- LOG CARD (Listener + Scanner tabs)
+-- ─────────────────────────────────────────────
+local function addLog(parentFrame, productName, productId, signalType, wasPurchased)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 58)
+    card.BackgroundColor3 = COLOR_CARD
+    card.BorderSizePixel = 0
+    card.Parent = parentFrame
+    applyCorner(card, 8)
+    applyStroke(card, COLOR_STROKE, 1)
+
+    makePadding(card, 6, 6, 10, 10)
+
+    local inner = Instance.new("UIListLayout")
+    inner.Padding = UDim.new(0, 2)
+    inner.SortOrder = Enum.SortOrder.LayoutOrder
+    inner.Parent = card
+
+    local nameLbl = makeLabel(card, "📦  " .. (productName or "Unknown Product"), 13, COLOR_WHITE, Enum.TextXAlignment.Left, true)
+    nameLbl.LayoutOrder = 1
+    nameLbl.Size = UDim2.new(1, -70, 0, 18)
+
+    local idLbl = makeLabel(card, "ID: " .. tostring(productId) .. "  |  " .. (signalType or "?") .. "  |  " .. (wasPurchased ~= nil and (wasPurchased and "✅ true" or "❌ false") or "🔍 scanned"), 11, COLOR_YELLOW, Enum.TextXAlignment.Left, false)
+    idLbl.LayoutOrder = 2
+    idLbl.Size = UDim2.new(1, -70, 0, 16)
+
+    -- Copy button (top-right of card)
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Text = "📋"
+    copyBtn.TextSize = 16
+    copyBtn.Size = UDim2.new(0, 34, 0, 34)
+    copyBtn.Position = UDim2.new(1, -40, 0, 8)
+    copyBtn.AnchorPoint = Vector2.new(0, 0)
+    copyBtn.BackgroundColor3 = COLOR_INACTIVE
+    copyBtn.BorderSizePixel = 0
+    copyBtn.Parent = card
+    applyCorner(copyBtn, 7)
+
+    copyBtn.MouseButton1Click:Connect(function()
+        if setclipboard then
+            setclipboard(tostring(productId))
+            copyBtn.Text = "✅"
+            task.delay(1.2, function() copyBtn.Text = "📋" end)
+        end
+    end)
+
+    return card
+end
+
+-- ─────────────────────────────────────────────
+-- ACTION BUTTON LOGIC (improved bulk)
+-- ─────────────────────────────────────────────
+local function getProductID()
+    local text = ProductIDInput.Text
+    if text:find(",") then
+        return text  -- Return raw string for bulk processing
+    end
+    local id = tonumber(text:match("%d+"))
+    if not id then
+        showStatus("✕  Invalid Product ID — enter a number or comma-separated list.", true)
+        return nil
+    end
+    return id
+end
+
+local function fireSignal(signalType, rawId)
+    if not rawId then 
+        rawId = getProductID()
+        if not rawId then return end
+    end
+
+    local player = Players.LocalPlayer
+    local successCount = 0
+    local totalCount = 0
+
+    local ids = {}
+    if signalType == "Bulk" and type(rawId) == "string" and rawId:find(",") then
+        for id in rawId:gmatch("%d+") do 
+            table.insert(ids, tonumber(id))
+        end
+    else
+        local num = tonumber(rawId)
+        if num then
+            ids = {num}
+        end
+    end
+    
+    totalCount = #ids
+    if totalCount == 0 then
+        showStatus("✕  No valid product IDs found.", true)
+        return
+    end
+
+    for _, pid in ipairs(ids) do
+        local ok, err = pcall(function()
+            if signalType == "Product" then
+                MarketplaceService:SignalPromptProductPurchaseFinished(player.UserId, pid, true)
+            elseif signalType == "Gamepass" then
+                MarketplaceService:SignalPromptGamePassPurchaseFinished(player, pid, true)
+            elseif signalType == "Bulk" then
+                MarketplaceService:SignalPromptBulkPurchaseFinished(player.UserId, {pid}, true)
+            elseif signalType == "Purchase" then
+                MarketplaceService:SignalPromptPurchaseFinished(player.UserId, pid, true)
+            end
+        end)
+        
+        if ok then 
+            successCount = successCount + 1
+            addLog(listenerPage, "Manual "..signalType, pid, signalType, true)
+        end
+    end
+
+    if successCount > 0 then
+        local msg = string.format("✓ Fired %s for %d/%d product(s)", signalType, successCount, totalCount)
+        showStatus(msg, false)
+        lastFiredLabel.Text = string.format("Last fired: %s (IDs: %s) at %s", signalType, tostring(rawId), os.date("%H:%M:%S"))
+    else
+        showStatus("✕ Failed to fire "..signalType, true)
+    end
+end
+
+HookBtn.MouseButton1Click:Connect(function() 
+    local id = getProductID()
+    if id then fireSignal("Product", id) end
+end)
+
+GamepassBtn.MouseButton1Click:Connect(function() 
+    local id = getProductID()
+    if id then fireSignal("Gamepass", id) end
+end)
+
+BulkBtn.MouseButton1Click:Connect(function() 
+    local input = ProductIDInput.Text
+    if input and input ~= "" then
+        fireSignal("Bulk", input)
+    else
+        showStatus("✕ Enter product IDs separated by commas for bulk (e.g., 123,456,789)", true)
+    end
+end)
+
+PurchaseBtn.MouseButton1Click:Connect(function() 
+    local id = getProductID()
+    if id then fireSignal("Purchase", id) end
+end)
+
+-- ─────────────────────────────────────────────
+-- FLOATING MODE ON MINIMIZE (improved)
 -- ─────────────────────────────────────────────
 local isMinimized = false
 local normalHeight = GUI_HEIGHT
+local normalWidth = GUI_WIDTH
 
 minimizeBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
-    local targetHeight = isMinimized and 36 or normalHeight
     contentArea.Visible = not isMinimized
     minimizeBtn.Text = isMinimized and "□" or "─"
-
+    
+    local targetHeight = isMinimized and 36 or normalHeight
+    local targetWidth = isMinimized and 120 or normalWidth
+    
+    if isMinimized then
+        -- Become a small floating pill
+        titleLabel.Text = "  🛒 Faker"
+    else
+        titleLabel.Text = "  🛒  Product Faker"
+    end
+    
     TweenService:Create(mainbg, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, GUI_WIDTH, 0, targetHeight)
+        Size = UDim2.new(0, targetWidth, 0, targetHeight)
     }):Play()
 end)
 
+-- ─────────────────────────────────────────────
+-- MINIMIZE / DESTROY (continued)
+-- ─────────────────────────────────────────────
 destroyBtn.MouseButton1Click:Connect(function()
     TweenService:Create(mainbg, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
         Size = UDim2.new(0, GUI_WIDTH, 0, 0),
@@ -517,98 +725,6 @@ do
 end
 
 -- ─────────────────────────────────────────────
--- LOG CARD (Listener + Scanner tabs)
--- ─────────────────────────────────────────────
-local function addLog(parentFrame, productName, productId, signalType, wasPurchased)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, 0, 0, 58)
-    card.BackgroundColor3 = COLOR_CARD
-    card.BorderSizePixel = 0
-    card.Parent = parentFrame
-    applyCorner(card, 8)
-    applyStroke(card, COLOR_STROKE, 1)
-
-    makePadding(card, 6, 6, 10, 10)
-
-    local inner = Instance.new("UIListLayout")
-    inner.Padding = UDim.new(0, 2)
-    inner.SortOrder = Enum.SortOrder.LayoutOrder
-    inner.Parent = card
-
-    local nameLbl = makeLabel(card, "📦  " .. (productName or "Unknown Product"), 13, COLOR_WHITE, Enum.TextXAlignment.Left, true)
-    nameLbl.LayoutOrder = 1
-    nameLbl.Size = UDim2.new(1, -70, 0, 18)
-
-    local idLbl = makeLabel(card, "ID: " .. tostring(productId) .. "  |  " .. (signalType or "?") .. "  |  " .. (wasPurchased and "✅ true" or "❌ false"), 11, COLOR_YELLOW, Enum.TextXAlignment.Left, false)
-    idLbl.LayoutOrder = 2
-    idLbl.Size = UDim2.new(1, -70, 0, 16)
-
-    -- Copy button (top-right of card)
-    local copyBtn = Instance.new("TextButton")
-    copyBtn.Text = "📋"
-    copyBtn.TextSize = 16
-    copyBtn.Size = UDim2.new(0, 34, 0, 34)
-    copyBtn.Position = UDim2.new(1, -40, 0, 8)
-    copyBtn.AnchorPoint = Vector2.new(0, 0)
-    copyBtn.BackgroundColor3 = COLOR_INACTIVE
-    copyBtn.BorderSizePixel = 0
-    copyBtn.Parent = card
-    applyCorner(copyBtn, 7)
-
-    copyBtn.MouseButton1Click:Connect(function()
-        if setclipboard then
-            setclipboard(tostring(productId))
-            copyBtn.Text = "✅"
-            task.delay(1.2, function() copyBtn.Text = "📋" end)
-        end
-    end)
-
-    return card
-end
-
--- ─────────────────────────────────────────────
--- ACTION BUTTON LOGIC
--- ─────────────────────────────────────────────
-local function getProductID()
-    local id = tonumber(ProductIDInput.Text)
-    if not id then
-        showStatus("✕  Invalid Product ID — enter a number.", true)
-    end
-    return id
-end
-
-local function fireSignal(signalType)
-    local productID = getProductID()
-    if not productID then return end
-
-    local player = Players.LocalPlayer
-
-    local ok, err = pcall(function()
-        if signalType == "Product" then
-            MarketplaceService:SignalPromptProductPurchaseFinished(player.UserId, productID, true)
-        elseif signalType == "Gamepass" then
-            MarketplaceService:SignalPromptGamePassPurchaseFinished(player, productID, true)
-        elseif signalType == "Bulk" then
-            MarketplaceService:SignalPromptBulkPurchaseFinished(player.UserId, productID, true)
-        elseif signalType == "Purchase" then
-            MarketplaceService:SignalPromptPurchaseFinished(player.UserId, productID, true)
-        end
-    end)
-
-    if ok then
-        showStatus("✓  Fired " .. signalType .. " signal for ID " .. productID, false)
-        addLog(listenerPage, "Manually fired", productID, signalType, true)
-    else
-        showStatus("✕  Error: " .. tostring(err), true)
-    end
-end
-
-HookBtn.MouseButton1Click:Connect(function()     fireSignal("Product") end)
-GamepassBtn.MouseButton1Click:Connect(function() fireSignal("Gamepass") end)
-BulkBtn.MouseButton1Click:Connect(function()     fireSignal("Bulk") end)
-PurchaseBtn.MouseButton1Click:Connect(function()  fireSignal("Purchase") end)
-
--- ─────────────────────────────────────────────
 -- MARKETPLACE LISTENER (auto-log real purchases)
 -- ─────────────────────────────────────────────
 MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, productId, wasPurchased)
@@ -641,4 +757,16 @@ MarketplaceService.PromptPurchaseFinished:Connect(function(player, assetId, isPu
     addLog(scanPage, name, assetId, "Purchase", isPurchased)
 end)
 
-print("[ProductFaker] Loaded — GUI ready.")
+-- Auto-scan for existing products (dev products in game)
+task.spawn(function()
+    task.wait(1)
+    local localPlayer = Players.LocalPlayer
+    pcall(function()
+        local products = MarketplaceService:GetDeveloperProductsAsync(localPlayer.UserId)
+        for _, product in products do
+            addLog(scanPage, product.Name, product.AssetId, "DevProduct", nil)
+        end
+    end)
+end)
+
+print("[ProductFaker v2] Loaded — Improved scanner, bulk fix, floating mode, safe zones.")
